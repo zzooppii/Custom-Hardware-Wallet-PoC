@@ -16,7 +16,7 @@
    - 역할: 이더리움 메인넷 프로바이더(Infura/Alchemy 등)와 연결되어 트랜잭션을 조립합니다. 하지만 본인이 직접 서명하지 않고, USB 포트(`/dev/tty.usbserial...`)를 통해 하드웨어 기기로 데이터를 던져 서명을 요청합니다.
    - 통신 라이브러리: `serialport` 기반 하드웨어 연동.
 
-## 🚀 작동 시나리오 (면접 설명용)
+## 🚀 작동 시나리오
 
 1. **PC (pc_client)**: 사용자가 앱에서 "1 ETH를 0xAbCd... 로 송금" 버튼을 누릅니다. PC는 트랜잭션의 Raw Data(해시값)를 만들어 USB 케이블을 통해 하드웨어 월렛 보드로 전송합니다.
 2. **Hardware Wallet (arduino_wallet)**: 보드는 USB를 통해 이 데이터를 수신하고 인터럽트에 걸립니다. 화면(OLED)에 `Send 1 ETH to 0xAbCd?` 라고 띄웁니다.

@@ -4,7 +4,7 @@
 // [가상의 보안 영역 - 이 키는 탈취할 수 없는 메모리(Secure Element)에 존재한다고 가정]
 const String SECURE_PRIVATE_KEY = "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef";
 
-String pendingTransaction = "";
+String pendingTxHash = "";
 bool waitingForApproval = false;
 
 void setup() {
@@ -24,11 +24,11 @@ void loop() {
   if (Serial.available()) {
     String payload = Serial.readStringUntil('\n');
 
-    // JSON 파싱 (목적지, 금액 등을 받음)
+    // JSON 파싱 (목적지, 금액, 해시 등을 받음)
     StaticJsonDocument<200> doc;
     DeserializationError error = deserializeJson(doc, payload);
     if (!error) {
-      pendingTransaction = payload;
+      pendingTxHash = doc["txHash"].as<String>();
       waitingForApproval = true;
 
       // 2. 물리적 화면(OLED)에만 출력. (아직 서명 안함)
@@ -40,7 +40,7 @@ void loop() {
       M5.Lcd.print("To: ");
       M5.Lcd.println(doc["to"].as<String>().substring(0, 10) + "...");
       M5.Lcd.print("Amount: ");
-      M5.Lcd.println(doc["amount"].as<String>());
+      M5.Lcd.println(doc["amount"].as<String>() + " ETH");
       
       M5.Lcd.setTextColor(GREEN);
       M5.Lcd.println("\nPress [Btn A] to SIGN");
@@ -52,8 +52,9 @@ void loop() {
   // 3. 서명 대기 상태
   if (waitingForApproval) {
     if (M5.BtnA.wasPressed()) {
-      // 4. [보안의 핵심] 기기 내부에서만 ECDSA 서명을 수행 (이 PoC에서는 가상 로직)
-      // 실제로는 uBitcoin이나 trezor-crypto의 secp256k1 로직 호출
+      // 4. [보안의 핵심] 기기 내부에서만 ECDSA 서명을 수행 
+      // 실제 구현 시: uBitcoin, micro-ecc, trezor-crypto의 secp256k1 로직 호출
+      // 예: ecdsa_sign_digest(&secp256k1, private_key, pendingTxHash, signature, &pby, NULL);
       
       M5.Lcd.clear();
       M5.Lcd.setTextColor(GREEN);
@@ -62,11 +63,15 @@ void loop() {
       
       delay(1000); // 연산 시뮬레이션
       
-      String signature = "0xabcd_signed_by_hardware_" + String(random(1000, 9999));
-      
+      // PoC 목적으로 하드웨어 펌웨어에서는 더미 포맷의 r, s, v 반환 (실제 연산은 생략)
+      // (완벽한 시뮬레이션은 pc_client/simulate.js에서 확인 가능)
       StaticJsonDocument<200> response;
       response["status"] = "success";
-      response["signature"] = signature;
+      
+      JsonObject sig = response.createNestedObject("signature");
+      sig["r"] = "0x1111111111111111111111111111111111111111111111111111111111111111"; // 더미
+      sig["s"] = "0x2222222222222222222222222222222222222222222222222222222222222222"; // 더미
+      sig["v"] = 27; // 더미
       
       // 서명값(영수증)만 PC(USB)로 뱉어냄
       serializeJson(response, Serial);
@@ -74,7 +79,7 @@ void loop() {
       
       M5.Lcd.println("Done! Sent to PC.");
       waitingForApproval = false;
-      pendingTransaction = "";
+      pendingTxHash = "";
     } 
     else if (M5.BtnC.wasPressed()) {
       // 사용자가 해킹 시도로 간주하고 거절
@@ -89,7 +94,7 @@ void loop() {
       Serial.println();
       
       waitingForApproval = false;
-      pendingTransaction = "";
+      pendingTxHash = "";
     }
   }
 }

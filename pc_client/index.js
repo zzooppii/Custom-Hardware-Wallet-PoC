@@ -1,5 +1,6 @@
 const { SerialPort } = require('serialport');
 const { ReadlineParser } = require('@serialport/parser-readline');
+const { ethers } = require('ethers');
 
 // ** Mac/Window의 실제 포트를 지정해야 합니다. (예: COM3 또는 /dev/tty.usbmodem...) **
 const PORT_NAME = '/dev/tty.SLAB_USBtoUART'; // Arduino 시리얼 포트 경로 (에시)
@@ -21,8 +22,14 @@ class HardwareWalletClient {
         try {
             const parsed = JSON.parse(data.trim());
             if (parsed.status === 'success') {
-                console.log(`\n✅ [SUCCESS] Hardware Wallet Signed! Signature: ${parsed.signature}`);
-                if (this.pendingResolve) this.pendingResolve(parsed.signature);
+                console.log(`\n✅ [SUCCESS] Hardware Wallet Signed! Signature r: ${parsed.signature.r.substring(0, 10)}...`);
+                // 서명된 트랜잭션 조립
+                if (this.pendingTx) {
+                    this.pendingTx.signature = parsed.signature;
+                    if (this.pendingResolve) this.pendingResolve(this.pendingTx.serialized);
+                } else {
+                    if (this.pendingResolve) this.pendingResolve(parsed.signature);
+                }
             } else if (parsed.status === 'rejected') {
                 console.log(`\n❌ [REJECTED] User pressed cancel on the device.`);
                 if (this.pendingReject) this.pendingReject(new Error("User Rejected on Device"));
@@ -36,15 +43,16 @@ class HardwareWalletClient {
     }
 
     // 서명 요청 (MetaMask가 하드웨어로 던지는 역할)
-    async requestSignature(transactionParams) {
-        console.log(`\n📤 Sending Transaction to Hardware Wallet for Approval...`);
-        console.log(`>> To: ${transactionParams.to} | Amount: ${transactionParams.amount}`);
+    async requestSignature(txRequest, originalTx) {
+        console.log(`\n📤 Sending Transaction Hash to Hardware Wallet for Approval...`);
+        console.log(`>> To: ${txRequest.to} | Amount: ${txRequest.amount} ETH`);
+        this.pendingTx = originalTx; // 원본 트랜잭션 객체 저장
 
         return new Promise((resolve, reject) => {
             this.pendingResolve = resolve;
             this.pendingReject = reject;
 
-            const payload = JSON.stringify(transactionParams) + '\n';
+            const payload = JSON.stringify(txRequest) + '\n';
             this.port.write(payload, (err) => {
                 if (err) {
                     console.error("Failed to send data to wallet:", err.message);
@@ -69,17 +77,29 @@ async function runDemo() {
             console.log(" 🏦 RWA Token Transfer Request");
             console.log("=================================");
 
-            const txRequest = {
+            // 실제 이더리움 트랜잭션 객체 생성
+            const tx = ethers.Transaction.from({
                 to: "0xAb5801a7D398351b8bE11C439e05C5B3259aeC9B",
-                amount: "10,000 USDC",
+                value: ethers.parseEther("0.1"),
                 nonce: 42,
-                chainId: 1
+                gasLimit: 21000,
+                maxPriorityFeePerGas: ethers.parseUnits("1", "gwei"),
+                maxFeePerGas: ethers.parseUnits("20", "gwei"),
+                chainId: 11155111 // Sepolia 체인 ID
+            });
+            
+            const txRequest = {
+                txHash: tx.unsignedHash,
+                to: tx.to,
+                amount: ethers.formatEther(tx.value)
             };
 
             try {
-                const signature = await hwWallet.requestSignature(txRequest);
+                // 원본 tx 객체도 함께 넘겨 v,r,s 를 주입받을 수 있도록 함
+                const signedTxRaw = await hwWallet.requestSignature(txRequest, tx);
                 console.log(`\n🔗 Now Broadcasting to Ethereum Network...`);
-                console.log(`[TxHash 0xabc123... submitted successfully]`);
+                console.log(`[Signed Tx Formatted: ${signedTxRaw}]`);
+                console.log(`Broadcast can be done via: new ethers.JsonRpcProvider(URL).broadcastTransaction(signedTxRaw)`);
             } catch (err) {
                 console.error("Transaction Aborted.");
             }

@@ -1,5 +1,6 @@
 const readline = require('readline');
 const EventEmitter = require('events');
+const { ethers } = require('ethers');
 
 // ======================================
 // 1. 가상 USB 케이블 (EventEmitter로 Mocking)
@@ -21,14 +22,22 @@ const usbCable = new MockUsbCable();
 class VirtualArduino {
     constructor(cable) {
         this.cable = cable;
+        
+        // [보안의 핵심] 기기 내부에 저장된 실제 프라이빗 키
+        const SECURE_PRIVATE_KEY = "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef";
+        this.signingKey = new ethers.SigningKey(SECURE_PRIVATE_KEY);
+        this.pendingTxHash = null;
 
         // PC에서 USB(가상)로 서명 요청이 들어오면 실행
         this.cable.on('data_to_device', (data) => {
             const tx = JSON.parse(data);
+            this.pendingTxHash = tx.txHash; // 서명할 해시 보관
+            
             console.log(`\n===========================================`);
             console.log(`[📱 HW 디바이스 화면] 트랜잭션 수신 완료!`);
             console.log(` - To: ${tx.to.substring(0, 10)}...`);
-            console.log(` - Amount: ${tx.amount}`);
+            console.log(` - Amount: ${tx.amount} ETH`);
+            console.log(` - TxHash: ${tx.txHash}`);
             console.log(`===========================================`);
             console.log(`🤔 물리 버튼을 누르시겠습니까? (터미널에 'y' 입력 후 엔터 : 서명 승인 / 'n' 입력 : 거절)`);
         });
@@ -36,17 +45,28 @@ class VirtualArduino {
         // 🌟 터미널에서 사용자 입력(물리 버튼 클릭)을 감지합니다.
         const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
         rl.on('line', (input) => {
-            if (input.trim() === 'y') {
-                console.log(`[📱 HW 디바이스] ✅ 승인 버튼 클릭됨! 내부 칩에서 보안 서명 중...`);
+            if (input.trim() === 'y' && this.pendingTxHash) {
+                console.log(`[📱 HW 디바이스] ✅ 승인 버튼 클릭됨! 내부 칩에서 ECDSA 보안 서명 중...`);
                 setTimeout(() => {
-                    const fakeSignature = "0xabcd_securely_signed_by_hardware_chip_9999";
-                    const response = JSON.stringify({ status: "success", signature: fakeSignature });
-                    this.cable.writeToPC(response); // 서명값을 PC로 USB(가상)를 통해 전송
+                    // 기기 내부에서 실제 secp256k1 타원곡선 서명 수행
+                    const signature = this.signingKey.sign(this.pendingTxHash);
+                    
+                    const response = JSON.stringify({ 
+                        status: "success", 
+                        signature: {
+                            r: signature.r,
+                            s: signature.s,
+                            v: signature.v
+                        } 
+                    });
+                    this.cable.writeToPC(response); // 서명값을 PC로 전송
+                    this.pendingTxHash = null;
                 }, 1000); // 1초 연산 딜레이
             } else if (input.trim() === 'n') {
                 console.log(`[📱 HW 디바이스] ❌ 거절 버튼 클릭됨!`);
                 const response = JSON.stringify({ status: "rejected" });
                 this.cable.writeToPC(response);
+                this.pendingTxHash = null;
             }
         });
     }
@@ -65,8 +85,17 @@ class PcClient {
         const parsed = JSON.parse(data);
         if (parsed.status === 'success') {
             console.log(`\n[💻 PC 소프트웨어] ✅ 기기로부터 서명값을 받았습니다!`);
-            console.log(`   받은 서명 영수증 : ${parsed.signature}`);
-            console.log(`🚀 이제 이더리움 메인넷으로 전송(Broadcast) 합니다!! 🚀\n`);
+            console.log(`   수신된 r : ${parsed.signature.r}`);
+            console.log(`   수신된 s : ${parsed.signature.s}`);
+            console.log(`   수신된 v : ${parsed.signature.v}`);
+            
+            // 서명된 트랜잭션 조립
+            if (this.pendingTx) {
+                this.pendingTx.signature = parsed.signature;
+                console.log(`\n🚀 완성된 Signed Raw Transaction : `);
+                console.log(`   ${this.pendingTx.serialized}\n`);
+                console.log(`🚀 이제 이더리움 테스트넷(RPC)으로 Broadcast 합니다!! 🚀\n`);
+            }
             process.exit(0);
         } else {
             console.log(`\n[💻 PC 소프트웨어] ❌ 기기에서 사용자가 거절했습니다. 송금이 취소됩니다.\n`);
@@ -74,9 +103,10 @@ class PcClient {
         }
     }
 
-    requestSignature(txData) {
-        console.log(`[💻 PC 소프트웨어] 하드웨어 월렛으로 서명 요청을 전송합니다 (USB 케이블 연결 중...)`);
-        const payload = JSON.stringify(txData);
+    requestSignature(txRequest, originalTx) {
+        console.log(`[💻 PC 소프트웨어] 하드웨어 월렛으로 트랜잭션 해시 서명 요청 전송중...`);
+        this.pendingTx = originalTx; // 반환받은 서명을 합치기 위해 원본 트랜잭션 기억
+        const payload = JSON.stringify(txRequest);
         this.cable.writeToDevice(payload);
     }
 }
@@ -86,6 +116,7 @@ class PcClient {
 // ======================================
 console.log("-----------------------------------------");
 console.log("   하드웨어 월렛(Cold Wallet) PoC 시뮬레이터");
+console.log("   (Ethers.js 실제 ECDSA 서명 적용 버전)");
 console.log("-----------------------------------------\n");
 
 // 1. 기기 전원을 켬 (Virtual Arduino 시작)
@@ -96,10 +127,26 @@ const pc = new PcClient(usbCable);
 
 // 3. 2초 뒤에 메타마스크가 결제를 요청함
 setTimeout(() => {
-    const txRequest = {
+    // 실제 이더리움 트랜잭션 객체 생성
+    const tx = ethers.Transaction.from({
         to: "0xAb5801a7D398351b8bE11C439e05C5B3259aeC9B",
-        amount: "10,000 RWA-Token",
-        chainId: 1
+        value: ethers.parseEther("0.1"),
+        nonce: 42,
+        gasLimit: 21000,
+        maxPriorityFeePerGas: ethers.parseUnits("1", "gwei"),
+        maxFeePerGas: ethers.parseUnits("20", "gwei"),
+        chainId: 11155111 // Sepolia 체인 ID
+    });
+    
+    // 이더리움 규격에 따른 서명 대상 해시(Keccak256) 추출
+    const txHash = tx.unsignedHash;
+    
+    // 하드웨어 기기로 보낼 페이로드
+    const txRequest = {
+        txHash: txHash,
+        to: tx.to,
+        amount: ethers.formatEther(tx.value)
     };
-    pc.requestSignature(txRequest);
+    
+    pc.requestSignature(txRequest, tx);
 }, 2000);

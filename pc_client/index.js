@@ -44,8 +44,8 @@ class HardwareWalletClient {
 
     // 서명 요청 (MetaMask가 하드웨어로 던지는 역할)
     async requestSignature(txRequest, originalTx) {
-        console.log(`\n📤 Sending Transaction Hash to Hardware Wallet for Approval...`);
-        console.log(`>> To: ${txRequest.to} | Amount: ${txRequest.amount} ETH`);
+        console.log(`\n📤 Sending Transaction Hash to HW Wallet for Approval...`);
+        console.log(`>> To: ${txRequest.to} | Amount: ${txRequest.amount} ETH | Gas Fee: ${txRequest.maxFeePerGas} Gwei`);
         this.pendingTx = originalTx; // 원본 트랜잭션 객체 저장
 
         return new Promise((resolve, reject) => {
@@ -91,7 +91,10 @@ async function runDemo() {
             const txRequest = {
                 txHash: tx.unsignedHash,
                 to: tx.to,
-                amount: ethers.formatEther(tx.value)
+                amount: ethers.formatEther(tx.value),
+                gasLimit: tx.gasLimit.toString(),
+                maxFeePerGas: ethers.formatUnits(tx.maxFeePerGas, "gwei"),
+                chainId: tx.chainId.toString()
             };
 
             try {

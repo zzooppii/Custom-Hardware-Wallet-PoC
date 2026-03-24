@@ -23,10 +23,14 @@ class VirtualArduino {
     constructor(cable) {
         this.cable = cable;
         
-        // [보안의 핵심] 기기 내부에 저장된 실제 프라이빗 키
-        const SECURE_PRIVATE_KEY = "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef";
-        this.signingKey = new ethers.SigningKey(SECURE_PRIVATE_KEY);
+        // [보안의 핵심] 기기 내부에 분리 보관된 12개 단어 니모닉(BIP39 Mnemonic Seed)
+        const mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+        const wallet = ethers.HDNodeWallet.fromPhrase(mnemonic);
+        this.signingKey = wallet.signingKey; // 기본 파생 경로 m/44'/60'/0'/0/0 에서 추출
+        
         this.pendingTxHash = null;
+        this.devicePin = "1234"; // 오프라인 하드웨어 잠금/서명 PIN
+        this.awaitingPin = false;
 
         // PC에서 USB(가상)로 서명 요청이 들어오면 실행
         this.cable.on('data_to_device', (data) => {
@@ -37,34 +41,51 @@ class VirtualArduino {
             console.log(`[📱 HW 디바이스 화면] 트랜잭션 수신 완료!`);
             console.log(` - To: ${tx.to.substring(0, 10)}...`);
             console.log(` - Amount: ${tx.amount} ETH`);
+            console.log(` - Gas Fee: ${tx.maxFeePerGas} Gwei (Max)`);
+            console.log(` - Chain ID: ${tx.chainId}`);
             console.log(` - TxHash: ${tx.txHash}`);
             console.log(`===========================================`);
-            console.log(`🤔 물리 버튼을 누르시겠습니까? (터미널에 'y' 입력 후 엔터 : 서명 승인 / 'n' 입력 : 거절)`);
+            console.log(`🤔 이 송금을 승인하시겠습니까? (터미널에 'y' 입력 후 엔터 : 서명 진행 / 'n' 입력 : 거절)`);
         });
 
-        // 🌟 터미널에서 사용자 입력(물리 버튼 클릭)을 감지합니다.
+        // 🌟 터미널에서 사용자 입력(물리 버튼 클릭 및 PIN)을 감지합니다.
         const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
         rl.on('line', (input) => {
-            if (input.trim() === 'y' && this.pendingTxHash) {
-                console.log(`[📱 HW 디바이스] ✅ 승인 버튼 클릭됨! 내부 칩에서 ECDSA 보안 서명 중...`);
-                setTimeout(() => {
-                    // 기기 내부에서 실제 secp256k1 타원곡선 서명 수행
-                    const signature = this.signingKey.sign(this.pendingTxHash);
-                    
-                    const response = JSON.stringify({ 
-                        status: "success", 
-                        signature: {
-                            r: signature.r,
-                            s: signature.s,
-                            v: signature.v
-                        } 
-                    });
-                    this.cable.writeToPC(response); // 서명값을 PC로 전송
+            if (this.awaitingPin) {
+                if (input.trim() === this.devicePin) {
+                    console.log(`[📱 HW 디바이스] ✅ PIN 인증 성공! HD 지갑 파생 경로(m/44'/60'/0'/0/0)를 통해 ECDSA 보안 서명 중...`);
+                    this.awaitingPin = false;
+                    setTimeout(() => {
+                        // 기기 내부에서 계층적 결정적 지갑(HD Wallet)의 실제 secp256k1 타원곡선 서명 수행
+                        const signature = this.signingKey.sign(this.pendingTxHash);
+                        
+                        const response = JSON.stringify({ 
+                            status: "success", 
+                            signature: {
+                                r: signature.r,
+                                s: signature.s,
+                                v: signature.v
+                            } 
+                        });
+                        this.cable.writeToPC(response); // 서명값을 PC로 전송
+                        this.pendingTxHash = null;
+                    }, 1000); // 1초 연산 딜레이
+                } else {
+                    console.log(`[📱 HW 디바이스] ❌ PIN 번호가 틀렸습니다! 해킹 시도 차단을 위해 서명을 즉시 취소합니다.`);
+                    this.awaitingPin = false;
+                    const response = JSON.stringify({ status: "rejected", reason: "Invalid PIN" });
+                    this.cable.writeToPC(response);
                     this.pendingTxHash = null;
-                }, 1000); // 1초 연산 딜레이
+                }
+                return;
+            }
+
+            if (input.trim() === 'y' && this.pendingTxHash) {
+                console.log(`[📱 HW 디바이스] 👉 송금이 승인되었습니다. 서명을 위해 기기 PIN 번호 4자리를 입력하세요 (예: 1234).`);
+                this.awaitingPin = true;
             } else if (input.trim() === 'n') {
                 console.log(`[📱 HW 디바이스] ❌ 거절 버튼 클릭됨!`);
-                const response = JSON.stringify({ status: "rejected" });
+                const response = JSON.stringify({ status: "rejected", reason: "User Rejected" });
                 this.cable.writeToPC(response);
                 this.pendingTxHash = null;
             }
@@ -141,11 +162,14 @@ setTimeout(() => {
     // 이더리움 규격에 따른 서명 대상 해시(Keccak256) 추출
     const txHash = tx.unsignedHash;
     
-    // 하드웨어 기기로 보낼 페이로드
+    // 하드웨어 기기로 보낼 확장 페이로드 (Gas 및 Network 정보 포함)
     const txRequest = {
         txHash: txHash,
         to: tx.to,
-        amount: ethers.formatEther(tx.value)
+        amount: ethers.formatEther(tx.value),
+        gasLimit: tx.gasLimit.toString(),
+        maxFeePerGas: ethers.formatUnits(tx.maxFeePerGas, "gwei"),
+        chainId: tx.chainId.toString()
     };
     
     pc.requestSignature(txRequest, tx);

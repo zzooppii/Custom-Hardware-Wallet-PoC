@@ -23,10 +23,24 @@ class HardwareWalletClient {
             const parsed = JSON.parse(data.trim());
             if (parsed.status === 'success') {
                 console.log(`\n✅ [SUCCESS] Hardware Wallet Signed! Signature r: ${parsed.signature.r.substring(0, 10)}...`);
-                // 서명된 트랜잭션 조립
+                // 서명된 트랜잭션 조립 (ethers v6: Transaction 객체는 불변 → 서명 포함해 새로 생성)
                 if (this.pendingTx) {
-                    this.pendingTx.signature = parsed.signature;
-                    if (this.pendingResolve) this.pendingResolve(this.pendingTx.serialized);
+                    const signedTx = ethers.Transaction.from({
+                        to: this.pendingTx.to,
+                        value: this.pendingTx.value,
+                        nonce: this.pendingTx.nonce,
+                        gasLimit: this.pendingTx.gasLimit,
+                        maxPriorityFeePerGas: this.pendingTx.maxPriorityFeePerGas,
+                        maxFeePerGas: this.pendingTx.maxFeePerGas,
+                        chainId: this.pendingTx.chainId,
+                        type: 2, // EIP-1559
+                        signature: {
+                            r: parsed.signature.r,
+                            s: parsed.signature.s,
+                            v: parsed.signature.v
+                        }
+                    });
+                    if (this.pendingResolve) this.pendingResolve(signedTx.serialized);
                 } else {
                     if (this.pendingResolve) this.pendingResolve(parsed.signature);
                 }
@@ -79,22 +93,30 @@ async function runDemo() {
 
             // 실제 이더리움 트랜잭션 객체 생성
             const tx = ethers.Transaction.from({
+                type: 2,
                 to: "0xAb5801a7D398351b8bE11C439e05C5B3259aeC9B",
                 value: ethers.parseEther("0.1"),
                 nonce: 42,
-                gasLimit: 21000,
+                gasLimit: 21000n,
                 maxPriorityFeePerGas: ethers.parseUnits("1", "gwei"),
                 maxFeePerGas: ethers.parseUnits("20", "gwei"),
-                chainId: 11155111 // Sepolia 체인 ID
+                chainId: 11155111n, // Sepolia 체인 ID
             });
-            
+
+            // 펌웨어가 rawFields로 독립 txHash 검증을 수행합니다 (Step 6)
             const txRequest = {
                 txHash: tx.unsignedHash,
-                to: tx.to,
-                amount: ethers.formatEther(tx.value),
-                gasLimit: tx.gasLimit.toString(),
-                maxFeePerGas: ethers.formatUnits(tx.maxFeePerGas, "gwei"),
-                chainId: tx.chainId.toString()
+                accountIndex: 0,
+                rawFields: {
+                    to: tx.to,
+                    value: tx.value.toString(),
+                    nonce: tx.nonce,
+                    gasLimit: tx.gasLimit.toString(),
+                    maxPriorityFeePerGas: tx.maxPriorityFeePerGas.toString(),
+                    maxFeePerGas: tx.maxFeePerGas.toString(),
+                    chainId: tx.chainId.toString(),
+                    data: '0x',
+                },
             };
 
             try {

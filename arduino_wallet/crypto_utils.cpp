@@ -30,7 +30,7 @@
 
 // ── secp256k1 곡선 위수 n ────────────────────────────────────────────────────
 // n = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141
-static const uint8_t SECP256K1_N[32] = {
+const uint8_t SECP256K1_N[32] = {
     0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,
     0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFE,
     0xBA,0xAE,0xDC,0xE6,0xAF,0x48,0xA0,0x3B,
@@ -290,16 +290,19 @@ bool derive_eth_privkey(const char* mnemonic, uint32_t accountIndex,
     uint8_t k3[32], c3[32];
     derive_child_hardened(k2, c2, 60, k3, c3);
     mbedtls_platform_zeroize(k2, 32);
+    mbedtls_platform_zeroize(c2, 32);
 
     // 5. / 0' (hardened)
     uint8_t k4[32], c4[32];
     derive_child_hardened(k3, c3, 0, k4, c4);
     mbedtls_platform_zeroize(k3, 32);
+    mbedtls_platform_zeroize(c3, 32);
 
     // 6. / 0 (normal)
     uint8_t k5[32], c5[32];
     derive_child_normal(k4, c4, 0, k5, c5);
     mbedtls_platform_zeroize(k4, 32);
+    mbedtls_platform_zeroize(c4, 32);
 
     // 7. / accountIndex (normal)
     derive_child_normal(k5, c5, accountIndex, privkey_out, c5);

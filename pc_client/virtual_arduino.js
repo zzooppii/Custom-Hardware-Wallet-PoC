@@ -138,6 +138,7 @@ class VirtualArduino {
         this.signingKey = null;
         this.mnemonic = null;    // 복호화된 니모닉 (accountIndex별 동적 파생에 사용)
         this.pendingAccountIndex = 0;
+        this.signedHashes = [];  // 리플레이 감지: 최근 서명한 txHash 목록
 
         // PC에서 서명 요청이 들어오면 실행
         this.cable.on('data_to_device', (data) => this._onTxReceived(data));
@@ -296,11 +297,28 @@ class VirtualArduino {
         this.pendingTxHash = tx.txHash;
         this.pendingAccountIndex = accountIndex;
 
+        // EIP-55 체크섬 검증 (mixed-case 주소인 경우만)
+        const toAddr = tx.rawFields.to || '';
+        let checksumWarning = '';
+        if (/[A-F]/.test(toAddr)) {
+            // mixed-case → ethers.getAddress()로 체크섬 검증
+            try {
+                ethers.getAddress(toAddr);
+            } catch {
+                checksumWarning = ' ⚠️  EIP-55 체크섬 불일치!';
+            }
+        }
+
+        // 리플레이 감지: 이미 서명한 해시면 경고
+        if (this.signedHashes.includes(tx.txHash)) {
+            console.log(`\n[📱 HW 기기] ⚠️  경고: 이 트랜잭션은 이미 서명된 적 있습니다! (중복 서명 요청)`);
+        }
+
         const derivPath = `m/44'/60'/0'/0/${this.pendingAccountIndex}`;
         console.log(`\n===========================================`);
         console.log(`[📱 HW 기기] 트랜잭션 수신 완료! (해시 검증 OK ✅)`);
         console.log(` - 계정     : Account #${this.pendingAccountIndex} (${derivPath})`);
-        console.log(` - To      : ${tx.rawFields.to}`);
+        console.log(` - To      : ${toAddr}${checksumWarning}`);
         console.log(` - Amount  : ${ethers.formatEther(tx.rawFields.value)} ETH`);
         console.log(` - Gas Fee : ${ethers.formatUnits(tx.rawFields.maxFeePerGas, 'gwei')} Gwei (Max)`);
         console.log(` - Chain ID: ${tx.rawFields.chainId}`);
@@ -389,6 +407,11 @@ class VirtualArduino {
                 signature: { r: signature.r, s: signature.s, v: signature.v },
             });
             this.cable.writeToPC(response);
+
+            // 리플레이 감지: 서명한 해시 기록 (최대 8개 유지)
+            this.signedHashes.push(this.pendingTxHash);
+            if (this.signedHashes.length > 8) this.signedHashes.shift();
+
             this.pendingTxHash = null;
         }, 500);
     }

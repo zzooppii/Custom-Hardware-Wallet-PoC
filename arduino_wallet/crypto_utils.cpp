@@ -156,16 +156,63 @@ bool generate_mnemonic(char* output, size_t maxLen) {
     return outLen > 0;
 }
 
-bool validate_mnemonic(const char* mnemonic) {
-    // 단어 수 확인 (12개여야 함)
-    int wordCount = 0;
-    const char* p = mnemonic;
-    while (*p) {
-        if (*p == ' ') wordCount++;
-        p++;
+// ── BIP39 단어 이진 탐색 (단어목록은 알파벳 순 정렬) ─────────────────────────
+// 반환값: 0-2047 인덱스, 없으면 -1
+static int bip39_find_word(const char* word) {
+    int lo = 0, hi = 2047;
+    while (lo <= hi) {
+        int mid = (lo + hi) / 2;
+        const char* wordPtr = (const char*)pgm_read_ptr(&bip39_english[mid]);
+        int cmp = strcmp_P(word, wordPtr);
+        if (cmp == 0) return mid;
+        else if (cmp < 0) hi = mid - 1;
+        else lo = mid + 1;
     }
-    wordCount++;  // 마지막 단어
-    return wordCount == 12;
+    return -1;
+}
+
+bool validate_mnemonic(const char* mnemonic) {
+    // 1. 입력 복사 후 공백으로 분리 (strtok는 원본 수정)
+    char buf[256];
+    strncpy(buf, mnemonic, sizeof(buf) - 1);
+    buf[sizeof(buf) - 1] = '\0';
+
+    char* words[13];  // 13개까지 탐지 (12개 초과 방지)
+    int count = 0;
+    char* tok = strtok(buf, " ");
+    while (tok && count < 13) {
+        words[count++] = tok;
+        tok = strtok(NULL, " ");
+    }
+    if (count != 12) return false;  // 정확히 12단어여야 함
+
+    // 2. 각 단어 BIP39 단어목록 검색 → 인덱스 추출
+    uint16_t indices[12];
+    for (int i = 0; i < 12; i++) {
+        int idx = bip39_find_word(words[i]);
+        if (idx < 0) return false;  // 목록에 없는 단어
+        indices[i] = (uint16_t)idx;
+    }
+
+    // 3. 132비트 비트 패킹 (11비트씩, MSB 우선)
+    uint8_t bits[17];
+    memset(bits, 0, sizeof(bits));
+    for (int i = 0; i < 12; i++) {
+        uint16_t idx = indices[i];
+        int bitStart = i * 11;
+        for (int b = 0; b < 11; b++) {
+            int bit = (idx >> (10 - b)) & 1;
+            int pos = bitStart + b;
+            if (bit) bits[pos / 8] |= (uint8_t)(1 << (7 - (pos % 8)));
+        }
+    }
+
+    // 4. 체크섬 검증: SHA-256(bits[0..15])[0] 상위 4비트 == bits[16] 상위 4비트
+    uint8_t hash[32];
+    mbedtls_sha256(bits, 16, hash, 0);
+    bool ok = ((hash[0] >> 4) == (bits[16] >> 4));
+    mbedtls_platform_zeroize(hash, sizeof(hash));
+    return ok;
 }
 
 // ── BIP39 → 시드 ──────────────────────────────────────────────────────────────

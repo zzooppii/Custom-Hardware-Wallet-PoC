@@ -77,6 +77,64 @@ static bool is_valid_hex_str(const char* h, size_t expected_bytes) {
     return true;
 }
 
+// ── EIP-55 주소 체크섬 검증 ────────────────────────────────────────────────────
+// 전부 소문자인 주소(checksum 미적용)는 true 반환.
+// mixed-case인 경우에만 keccak256 기반 체크섬 검증 수행.
+static bool is_checksum_address(const char* addr) {
+    if (strlen(addr) != 42) return false;
+    if (addr[0] != '0' || addr[1] != 'x') return false;
+    const char* hex = addr + 2;
+    bool hasMixed = false;
+    for (int i = 0; i < 40; i++) {
+        char c = hex[i];
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')))
+            return false;  // 유효하지 않은 문자
+        if (c >= 'A' && c <= 'F') hasMixed = true;
+    }
+    if (!hasMixed) return true;  // 전부 소문자 → checksum 미적용 → 통과
+
+    // keccak256(lowercase hex 40자)
+    char lower[41];
+    for (int i = 0; i < 40; i++) {
+        char c = hex[i];
+        lower[i] = (c >= 'A' && c <= 'F') ? (char)(c + 32) : c;
+    }
+    lower[40] = '\0';
+    uint8_t hash[32];
+    keccak256((const uint8_t*)lower, 40, hash);
+
+    for (int i = 0; i < 40; i++) {
+        char c = hex[i];
+        if (c >= '0' && c <= '9') continue;  // 숫자는 체크섬 무관
+        uint8_t nibble = (hash[i / 2] >> (i % 2 == 0 ? 4 : 0)) & 0x0F;
+        if (nibble >= 8) {
+            if (c >= 'a' && c <= 'f') return false;  // 대문자여야 함
+        } else {
+            if (c >= 'A' && c <= 'F') return false;  // 소문자여야 함
+        }
+    }
+    return true;
+}
+
+// ── 트랜잭션 리플레이 감지 링버퍼 ────────────────────────────────────────────
+static const int SIGNED_HISTORY_SIZE = 8;
+static char g_signed_hashes[SIGNED_HISTORY_SIZE][67];  // 66자 hex + null
+static int  g_signed_idx = 0;
+
+static bool was_recently_signed(const char* txHash) {
+    for (int i = 0; i < SIGNED_HISTORY_SIZE; i++) {
+        if (g_signed_hashes[i][0] != '\0' && strcmp(g_signed_hashes[i], txHash) == 0)
+            return true;
+    }
+    return false;
+}
+
+static void record_signed_hash(const char* txHash) {
+    strncpy(g_signed_hashes[g_signed_idx], txHash, 66);
+    g_signed_hashes[g_signed_idx][66] = '\0';
+    g_signed_idx = (g_signed_idx + 1) % SIGNED_HISTORY_SIZE;
+}
+
 // ── 거절 전송 ─────────────────────────────────────────────────────────────────
 static void send_rejection(const char* reason) {
     StaticJsonDocument<200> resp;
@@ -373,16 +431,40 @@ void loop() {
                 break;
             }
 
+            // 리플레이 감지: 최근 서명한 해시와 동일하면 경고
+            if (was_recently_signed(txHash)) {
+                M5.Lcd.clear();
+                M5.Lcd.setTextColor(ORANGE);
+                M5.Lcd.println("!! DUPLICATE TX !!");
+                M5.Lcd.setTextColor(WHITE);
+                M5.Lcd.println("This hash was");
+                M5.Lcd.println("recently signed.");
+                M5.Lcd.println("Review carefully!");
+                delay(3000);
+            }
+
             // 검증 통과 → 트랜잭션 표시
+            String toAddr = rawFields["to"].as<String>();
+            // EIP-55 체크섬 검증 (mixed-case 주소만 해당)
+            bool checksumOk = is_checksum_address(toAddr.c_str());
+
             M5.Lcd.clear();
             M5.Lcd.setCursor(0, 0);
             M5.Lcd.setTextColor(YELLOW);
             M5.Lcd.println("Review TX (OK)");
             M5.Lcd.setTextColor(WHITE);
             M5.Lcd.printf("Acct: #%d\n", g_account_index);
-            M5.Lcd.print("To: ");
-            String toAddr = rawFields["to"].as<String>();
-            M5.Lcd.println(toAddr.substring(0, 12) + "...");
+            // EIP-55 체크섬 불일치 시 경고 표시
+            if (!checksumOk) {
+                M5.Lcd.setTextColor(RED);
+                M5.Lcd.println("! CHECKSUM WARN !");
+                M5.Lcd.setTextColor(WHITE);
+            }
+            // 수신 주소 전체 표시 (바니티 주소 공격 방지)
+            M5.Lcd.println("To:");
+            M5.Lcd.setTextSize(1);
+            M5.Lcd.println(toAddr);
+            M5.Lcd.setTextSize(2);
             // value는 wei → 표시 (간략)
             M5.Lcd.print("Val: ");
             M5.Lcd.println(rawFields["value"].as<String>() + " wei");
@@ -538,6 +620,9 @@ void loop() {
 
         serializeJson(response, Serial);
         Serial.println();
+
+        // 서명 완료 → 해시 기록 (리플레이 감지용)
+        record_signed_hash(g_pending_hash);
 
         M5.Lcd.clear();
         M5.Lcd.setTextColor(GREEN);
